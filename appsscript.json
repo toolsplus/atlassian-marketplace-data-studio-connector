@@ -1,0 +1,18 @@
+{
+  "timeZone": "America/New_York",
+  "dependencies": {
+  },
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8",
+  "dataStudio": {
+    "name": "Atlassian Marketplace",
+    "logoUrl": "https://wac-cdn.atlassian.com/dam/jcr:89e146b4-642e-41fc-8e65-7848337d7bdd/atlassian_charlie_square.png",
+    "company": "ToolsPlus",
+    "companyUrl": "https://toolsplus.io/",
+    "addonUrl": "https://github.com/toolsplus/atlassian-marketplace-data-studio-connector/",
+    "supportUrl": "https://github.com/toolsplus/atlassian-marketplace-data-studio-connector/issues",
+    "description": "This connector lets users query CSV data from Atlassian Marketplace API.",
+    "shortDescription": "Connect to Atlassian Marketplace data.",
+    "authType": ["USER_PASS"]
+  }
+}
