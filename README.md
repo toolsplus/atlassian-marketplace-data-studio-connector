@@ -1,5 +1,13 @@
 # Atlassian Marketplace Connector for Google Data Studio
 
+**⚠️ DEPRECATED** Fetching export data directly from the Atlassian Marketplace API is generally quite slow. As a result
+Data Studio reports that fetch data using this connector load fairly slow. In an effort to try to fix this we are deprecating
+this connector in favor of a new Google Sheets connector: https://github.com/toolsplus/atlassian-marketplace-sheets-connector.
+The Google Sheets connector allows you to load Marketplace data into a Google Sheet which can then be imported into Data Studio
+using the Data Studio native Google Sheet connector.
+
+---
+
 Bring your Atlassian Marketplace data to Google Data Studio and create reports and charts to visualize your sales
 performance, licensing data or, conversion events.
 
