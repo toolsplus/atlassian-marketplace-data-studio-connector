@@ -84,22 +84,37 @@ function throwConnectorError(message: string) {
 /**
  * Calls the Atlassian Marketplace API to fetch CSV data from the given configuration.
  *
+ * Note that by setting `muteHttpExceptions` to `true` this function will not throw
+ * if the API call a response code that indicates an error and instead returns a regular
+ * `HTTPResponse` object.
+ *
  * @param configuration User-configured options for this connector instance
  * @param credentials Credentials to authenticated the API call
  */
-function vendorApiFetch(configuration: ConfigParams, credentials: Credentials) {
+function vendorApiFetch(
+  configuration: ConfigParams,
+  credentials: Credentials
+): GoogleAppsScript.URL_Fetch.HTTPResponse {
   const fullUrl = `${marketplaceVendorBaseUrl(configuration.vendorId)}/${
     configuration.datasetApiPath
-  }`;
+  }?accept=csv`;
   const authParamPlain = `${credentials.username}:${credentials.password}`;
   const authParamBase64 = Utilities.base64Encode(authParamPlain);
-  const options = {
+  const options: GoogleAppsScript.URL_Fetch.URLFetchRequestOptions = {
     headers: {
       Authorization: `Basic ${authParamBase64}`,
-      Accept: "text/csv",
     },
+    muteHttpExceptions: true,
   };
-  return UrlFetchApp.fetch(fullUrl, options);
+  let result;
+  try {
+    result = UrlFetchApp.fetch(fullUrl, options);
+  } catch (e) {
+    Logger.log(`[vendorApiFetch] Failed to fetch ${fullUrl}`, { error: e });
+    return dummyErrorResponse();
+  }
+
+  return result;
 }
 
 /**
@@ -130,39 +145,11 @@ function getStoredCredentials(): Credentials | undefined {
 }
 
 /**
- * Calls the Atlassian Marketplace API to fetch CSV data from the given configuration using the credentials stored in
- * the user properties.
- *
- * Note that this function will try to parse the CSV data returned by the API.
- *
- * @param configuration User-configured options for this connector instance
- */
-function getFileData(configuration: ConfigParams): CsvData {
-  const credentials = getStoredCredentials();
-
-  if (!credentials) {
-    const message = "Cloud not retrieve stored credentials configured";
-    Logger.log(message, { configuration });
-    throwConnectorError(message);
-    return dummyErrorResponse();
-  }
-
-  const response = vendorApiFetch(configuration, credentials);
-  const fileContent = response.getContentText();
-  // Fix the bug on Utilities.parseCsv() google script function which does not allow newlines in csv strings
-  // https://gist.github.com/simonjamain/7e23b898527655609e5ff012f412dd50
-  const sanitizedFileContent = fileContent.replace(/(["'])(?:(?=(\\?))\2[\s\S])*?\1/g, (e) =>
-    e.replace(/\r?\n|\r/g, " ")
-  );
-  return Utilities.parseCsv(sanitizedFileContent);
-}
-
-/**
  * Returns the schema cache key for the given Marketplace API endpoint.
  * @param datasetEndpoint User-provided dataset API endpoint
  */
 function getSchemaCacheKey(datasetEndpoint: string): string {
-  return datasetEndpoint.split("/").join("--");
+  return `schema--${datasetEndpoint.split("/").join("--")}`;
 }
 
 /**
@@ -172,7 +159,7 @@ function getSchemaCacheKey(datasetEndpoint: string): string {
  * a cache instance. In those cases a log message will be recorded.
  *
  * @param schema Schema to cache
- * @param cacheKey Cache key under which to store the schema
+ * @param cacheKey Cache key under which to cache the schema
  */
 function cacheSchema(schema: FieldSchema[], cacheKey: string): void {
   const maybeCache = CacheService.getScriptCache();
@@ -180,6 +167,84 @@ function cacheSchema(schema: FieldSchema[], cacheKey: string): void {
     maybeCache.put(cacheKey, JSON.stringify(schema));
   } else {
     Logger.log("Failed to cache schema because script cache was null");
+  }
+}
+
+/**
+ * Tries to fetch the cached schema for the given cache key.
+ *
+ * @param cacheKey Cache key for which to fetch the schema
+ * @returns Cached schema or undefined if none is found.
+ */
+function getCachedSchema(cacheKey: string): FieldSchema[] | undefined {
+  const maybeCache = CacheService.getScriptCache();
+  if (maybeCache !== null) {
+    const maybeCachedSchema = maybeCache.get(cacheKey);
+    if (maybeCachedSchema !== null) {
+      return JSON.parse(maybeCachedSchema);
+    }
+  }
+}
+
+/**
+ * Calls the Atlassian Marketplace API to fetch CSV data from the given configuration using the credentials stored in
+ * the user properties.
+ *
+ * Note that this function will throw if either the Marketplace API returns any non 200 response code, or parsing the
+ * returned CSV data fails.
+ * If all operations complete successfully this function will cache the parsed CSV response for some time.
+ *
+ * @param configuration User-configured options for this connector instance
+ */
+function getFileData(configuration: ConfigParams): CsvData {
+  const credentials = getStoredCredentials();
+
+  if (!credentials) {
+    const message = "[getFileData] Cloud not retrieve stored credentials configured";
+    Logger.log(message, { configuration });
+    throwConnectorError(message);
+    return dummyErrorResponse();
+  }
+
+  let response: GoogleAppsScript.URL_Fetch.HTTPResponse;
+  try {
+    response = vendorApiFetch(configuration, credentials);
+  } catch (e) {
+    const message = "[getFileData] Unexpected error when fetching data from the Marketplace API";
+    Logger.log(message, {
+      error: JSON.stringify(e),
+      configuration: configuration,
+    });
+    throwConnectorError(message);
+    return dummyErrorResponse();
+  }
+
+  if (response.getResponseCode() !== 200) {
+    const message = "[getFileData] Unhandled Marketplace API response";
+    Logger.log(message, { configuration, response });
+    throwConnectorError(message);
+    return dummyErrorResponse();
+  }
+
+  const fileContent = response.getContentText();
+
+  // Fix the bug on Utilities.parseCsv() google script function which does not allow newlines in csv strings
+  // https://gist.github.com/simonjamain/7e23b898527655609e5ff012f412dd50
+  const sanitizedFileContent = fileContent.replace(/(["'])(?:(?=(\\?))\2[\s\S])*?\1/g, (e) =>
+    e.replace(/\r?\n|\r/g, " ")
+  );
+
+  try {
+    return Utilities.parseCsv(sanitizedFileContent);
+  } catch (e) {
+    const message = "Unexpected CSV parsing exception";
+    Logger.log(message, {
+      error: JSON.stringify(e),
+      configuration: configuration,
+      sanitizedFileContent,
+    });
+    throwConnectorError(message);
+    return dummyErrorResponse();
   }
 }
 
@@ -220,22 +285,6 @@ function buildSchema(data: CsvData): FieldSchema[] {
 }
 
 /**
- * Tries to fetch the cached schema for the given cache key.
- *
- * @param cacheKey Cache key for which to fetch the schema
- * @returns Cached schema if one could be retried or undefined otherwise.
- */
-function getCachedSchema(cacheKey: string): FieldSchema[] | undefined {
-  const maybeCache = CacheService.getScriptCache();
-  if (maybeCache !== null) {
-    const maybeCachedSchema = maybeCache.get(cacheKey);
-    if (maybeCachedSchema !== null) {
-      return JSON.parse(maybeCachedSchema);
-    }
-  }
-}
-
-/**
  * Tries to fetch CSV data for the given configuration.
  *
  * @param configuration User-configured options for this connector instance
@@ -245,11 +294,12 @@ function fetchCsvData(configuration: ConfigParams): CsvData | undefined {
   try {
     return getFileData(configuration);
   } catch (e) {
-    Logger.log("Failed to fetch CSV data", {
-      error: e,
+    const message = "[fetchCsvData] Failed to fetch CSV data";
+    Logger.log(message, {
+      error: JSON.stringify(e),
       datasetApiPath: configuration.datasetApiPath,
     });
-    throwConnectorError("[fetchCsvData()] Unable to fetch data: " + e);
+    throwConnectorError(`${message} ${e}`);
   }
 }
 
@@ -284,7 +334,7 @@ function getSchemaByDatasetApiPath(
   }
 
   Logger.log(
-    "Failed to get schema: There is no cached schema, prefetched CSV data or fetching CSV data to infer the schema did not return any data.",
+    "[getSchemaByDatasetApiPath] Failed to get schema: There is no cached schema, prefetched CSV data or fetching CSV data to infer the schema did not return any data.",
     {
       maybeCsvData,
       maybeCachedSchema,
